@@ -1,0 +1,23 @@
+{
+  "name": "lumen-agent",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.20.0",
+    "@linear/sdk": "^17.0.0",
+    "@octokit/rest": "^20.0.0",
+    "express": "^4.18.0",
+    "dotenv": "^16.3.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.0",
+    "@types/node": "^20.0.0",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.2.0"
+  }
+}

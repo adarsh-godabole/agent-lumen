@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: lumen-agent
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_OWNER
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
+      - key: LINEAR_API_KEY
+        sync: false
+      - key: LINEAR_AGENT_USER_ID
+        sync: false
+      - key: LINEAR_WEBHOOK_SECRET
+        sync: false
+      - key: LINEAR_DISCUSSION_LABEL_ID
+        sync: false

@@ -1,7 +1,14 @@
 // In-memory state store — replaces Firestore for the POC.
 // All state is lost on server restart, which is fine for a demo.
 
-export type TicketStatus = "checking_claude_md" | "claude_md_missing" | "claude_md_found";
+import { ConversationTurn } from "./llm";
+
+export type TicketStatus =
+  | "checking_claude_md"
+  | "claude_md_missing"
+  | "analysing"
+  | "awaiting_answers"
+  | "summarised";
 
 export interface TicketState {
   ticketId: string;
@@ -9,6 +16,9 @@ export interface TicketState {
   description: string;
   url: string;
   status: TicketStatus;
+  claudeMdContent?: string;
+  conversationLog: ConversationTurn[];
+  round: number;
   createdAt: Date;
   updatedAt: Date;
 }

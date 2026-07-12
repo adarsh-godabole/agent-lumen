@@ -4,10 +4,14 @@ import { verifyLinearSignature } from "./auth";
 import { State, TicketState } from "./state";
 import { getFileContent } from "./github";
 import { postComment } from "./linear";
-import { generateQuestions, evaluateSufficiency, generateTechnicalDocument } from "./llm";
+import { generateQuestion, generateTechnicalDocument, ConversationTurn } from "./llm";
 
 const app = express();
-const MAX_ROUNDS = 3;
+
+// Comments Lumen itself has posted — used to ignore its own comments in the
+// webhook feed, since the POC's Linear API key posts as the same account
+// that answers on Lumen's behalf (no dedicated bot account exists yet).
+const lumenCommentIds = new Set<string>();
 
 // ── Middleware: capture raw body for HMAC verification ───────────────────────
 app.use(
@@ -92,10 +96,9 @@ async function handleIssueUpdate(body: any) {
 async function handleCommentCreate(body: any) {
   const comment = body.data;
   const ticketId = comment.issueId;
-  const agentUserId = process.env.LINEAR_AGENT_USER_ID!;
 
   // Ignore Lumen's own comments — otherwise it replies to itself forever
-  if (comment.userId === agentUserId) return;
+  if (lumenCommentIds.has(comment.id)) return;
 
   const state = State.get(ticketId);
   if (!state || state.status !== "awaiting_answers") return;
@@ -116,7 +119,8 @@ async function checkClaudeMd(ticketId: string) {
 
   if (claudeMdContent === null) {
     State.transition(ticketId, "claude_md_missing");
-    await postComment(ticketId, "I don't see any CLAUDE.md files, please add.");
+    const commentId = await postComment(ticketId, "I don't see any CLAUDE.md files, please add.");
+    lumenCommentIds.add(commentId);
     console.log(`[Lumen] CLAUDE.md missing for ${ticketId} — comment posted`);
     return;
   }
@@ -126,55 +130,55 @@ async function checkClaudeMd(ticketId: string) {
   await runQuestionGeneration(ticketId);
 }
 
-// ── Step 2: generate and post clarifying questions ───────────────────────────
+// ── Step 2: generate and post the single most important clarifying question ─
 async function runQuestionGeneration(ticketId: string) {
   const state = State.get(ticketId)!;
-  const questions = await generateQuestions(state.title, state.description, state.claudeMdContent!);
+  const question = await generateQuestion(state.title, state.description, state.claudeMdContent!);
 
-  const commentBody = formatQuestionsComment(questions);
-  await postComment(ticketId, commentBody);
-
-  State.transition(ticketId, "awaiting_answers", {
-    conversationLog: [{ from: "lumen", text: questions.join("\n") }],
-  });
-  console.log(`[Lumen] Questions posted for ${ticketId}`);
-}
-
-// ── Step 3: evaluate the answer, ask follow-ups, or produce the technical doc ─
-async function runEvaluation(ticketId: string, answerText: string) {
-  const state = State.get(ticketId)!;
-  const conversationLog = [...state.conversationLog, { from: "human" as const, text: answerText }];
-  const round = state.round + 1;
-
-  const { sufficient, followUpQuestions } = await evaluateSufficiency(
-    state.title,
-    state.description,
-    conversationLog
-  );
-
-  if (sufficient || round >= MAX_ROUNDS) {
-    const doc = await generateTechnicalDocument(
-      state.title,
-      state.description,
-      state.claudeMdContent!,
-      conversationLog
-    );
-    await postComment(ticketId, formatSummaryComment(doc));
-    State.transition(ticketId, "summarised", { conversationLog, round });
-    console.log(`[Lumen] Technical document posted for ${ticketId}`);
+  if (!question) {
+    console.log(`[Lumen] No clarifying question needed for ${ticketId} — going straight to summary`);
+    await finalizeTechnicalDocument(ticketId, state.conversationLog, state.round);
     return;
   }
 
-  const followUpLog = [...conversationLog, { from: "lumen" as const, text: followUpQuestions.join("\n") }];
-  await postComment(ticketId, formatQuestionsComment(followUpQuestions));
-  State.transition(ticketId, "awaiting_answers", { conversationLog: followUpLog, round });
-  console.log(`[Lumen] Follow-up questions posted for ${ticketId} (round ${round})`);
+  const commentId = await postComment(ticketId, formatQuestionComment(question));
+  lumenCommentIds.add(commentId);
+
+  State.transition(ticketId, "awaiting_answers", {
+    conversationLog: [{ from: "lumen", text: question }],
+  });
+  console.log(`[Lumen] Question posted for ${ticketId}`);
+}
+
+// ── Step 3: single answer received — go straight to the technical document ──
+async function runEvaluation(ticketId: string, answerText: string) {
+  const state = State.get(ticketId)!;
+  const conversationLog = [...state.conversationLog, { from: "human" as const, text: answerText }];
+  await finalizeTechnicalDocument(ticketId, conversationLog, state.round + 1);
+}
+
+// ── Step 4: generate and post the final technical document ──────────────────
+async function finalizeTechnicalDocument(
+  ticketId: string,
+  conversationLog: ConversationTurn[],
+  round: number
+) {
+  const state = State.get(ticketId)!;
+  const doc = await generateTechnicalDocument(
+    state.title,
+    state.description,
+    state.claudeMdContent!,
+    conversationLog
+  );
+  const commentId = await postComment(ticketId, formatSummaryComment(doc));
+  lumenCommentIds.add(commentId);
+  State.transition(ticketId, "summarised", { conversationLog, round });
+  console.log(`[Lumen] Technical document posted for ${ticketId}`);
 }
 
 // ── Comment formatting ───────────────────────────────────────────────────────
-function formatQuestionsComment(questions: string[]): string {
-  const list = questions.map((q, i) => `${i + 1}. ${q}`).join("\n");
-  return `## 🔎 Lumen — Clarifying Questions\n\n${list}\n\n---\nPlease reply in a comment with your answers.`;
+function formatQuestionComment(question: string): string {
+  return `## 🔎 Lumen — Clarifying Question\n\n${question}\n\n---\nPlease reply in a comment with your answer.`;
 }
 
 function formatSummaryComment(doc: string): string {

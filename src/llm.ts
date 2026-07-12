@@ -34,18 +34,40 @@ function formatConversation(log: ConversationTurn[]): string {
     .join("\n\n");
 }
 
-/** Phase 3: analyse the requirement against CLAUDE.md and generate clarifying questions. */
-export async function generateQuestions(
+/** Phase 3: analyse the requirement against CLAUDE.md and generate the single most important clarifying question. */
+export async function generateQuestion(
   title: string,
   description: string,
   claudeMdContent: string
-): Promise<string[]> {
-  const systemPrompt = `You are Lumen, a requirement-intelligence agent. Analyse the given requirement against the codebase's CLAUDE.md documentation. Identify:
-- ambiguities or missing details in the requirement itself
-- conflicts between the requirement and existing documented flows/data models
+): Promise<string | null> {
+  const systemPrompt = `You are Lumen, a requirement-intelligence agent. You are having a conversation with a Product Manager who is NOT technical and has no knowledge of the codebase, its variables, APIs, data models, or internal architecture.
 
-Generate clarifying questions a developer would need answered before implementation. Respond with ONLY valid JSON:
-{ "questions": ["question 1", "question 2"] }
+You are given the codebase's CLAUDE.md documentation. Use it ONLY as background knowledge to figure out where the requirement is ambiguous or conflicts with how the product currently behaves. NEVER surface anything from CLAUDE.md directly in a question — no file names, variable names, function names, API endpoints, "state", "backend", "frontend", database/schema terms, or any other implementation vocabulary.
+
+Translate every technical concern into a plain business/product question about what the user should see or experience. Think like a business analyst interviewing a client, not an engineer interviewing a tech lead.
+
+You will have a chance to ask more questions later, one at a time, so do not try to cover everything now. Identify every real gap, then ask ONLY the single most important one — the one whose answer would most affect the design or scope of the feature.
+
+Rules for a good question:
+- Ask about product behavior and business rules, never about implementation (no "should we update the state", "should this be computed client-side or via a new API call", "should we change the POST payload").
+- The question must be grounded in a real gap between the requirement and how the product behaves today — never generic boilerplate that would apply to any feature.
+- Do not ask about anything the requirement already answers.
+- If there is truly no meaningful gap, return null.
+- The question should be answerable with a plain-language decision a non-technical stakeholder can make confidently.
+
+Bad (technical, references code/implementation — never do this):
+- "Should the quarterly count reuse the existing client-side submissions list, or does it need a new API call?"
+
+Bad (vague, generic, not grounded in this requirement):
+- "What should happen in edge cases?"
+
+Good (plain business language, grounded in the actual requirement):
+- "The requirement doesn't say which months make up the first quarter — does your fiscal year start in January, or does it follow a different calendar?"
+
+Respond with ONLY valid JSON:
+{ "question": "the single question" }
+or, if there is no meaningful gap:
+{ "question": null }
 No markdown, no backticks, raw JSON only.`;
 
   const userMessage = `<requirement>
@@ -57,45 +79,10 @@ No markdown, no backticks, raw JSON only.`;
 ${claudeMdContent}
 </claude_md>
 
-Generate the clarifying questions.`;
+Generate the single most important clarifying question.`;
 
   const parsed = await askJSON(systemPrompt, userMessage);
-  return parsed.questions ?? [];
-}
-
-/** Phase 4: evaluate whether the Q&A so far is sufficient, or produce follow-up questions. */
-export async function evaluateSufficiency(
-  title: string,
-  description: string,
-  conversationLog: ConversationTurn[]
-): Promise<{ sufficient: boolean; followUpQuestions: string[] }> {
-  const systemPrompt = `You are Lumen, a requirement-intelligence agent. You previously asked clarifying questions about a requirement, and the product owner has answered. Evaluate whether the conversation now gives enough detail to write a complete technical specification.
-
-An answer is sufficient only if it is:
-- Specific (not "TBD" or "as per standard")
-- Actionable (a developer could implement from it without further clarification)
-- Non-contradictory with other answers already given
-
-If any open question remains unresolved by these rules, generate follow-up questions only for those gaps. Respond with ONLY valid JSON:
-{ "sufficient": true|false, "follow_up_questions": ["..."] }
-follow_up_questions must be an empty array when sufficient is true. No markdown, no backticks, raw JSON only.`;
-
-  const userMessage = `<requirement>
-<title>${title}</title>
-<description>${description || "(no description provided)"}</description>
-</requirement>
-
-<conversation>
-${formatConversation(conversationLog)}
-</conversation>
-
-Evaluate sufficiency.`;
-
-  const parsed = await askJSON(systemPrompt, userMessage);
-  return {
-    sufficient: parsed.sufficient ?? false,
-    followUpQuestions: parsed.follow_up_questions ?? [],
-  };
+  return parsed.question ?? null;
 }
 
 /** Phase 5: generate the structured technical document handed off to the Coding Agent. */

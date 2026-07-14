@@ -4,7 +4,7 @@ import { verifyLinearSignature } from "./auth";
 import { State, TicketState } from "./state";
 import { getFileContent } from "./github";
 import { postComment } from "./linear";
-import { evaluateTask, generateTechnicalDocument } from "./llm";
+import { evaluateTask, generateTechnicalDocument, ConversationTurn } from "./llm";
 
 const app = express();
 
@@ -142,11 +142,10 @@ async function runTaskEvaluation(ticketId: string) {
     state.claudeMdContent!
   );
 
+  // Clear task: no questions needed — produce the technical document straight away.
   if (clear || questions.length === 0) {
-    const commentId = await postComment(ticketId, formatAcknowledgementComment());
-    lumenCommentIds.add(commentId);
-    State.transition(ticketId, "acknowledged");
-    console.log(`[Lumen] Task clear for ${ticketId} — acknowledged, no questions`);
+    console.log(`[Lumen] Task clear for ${ticketId} — no questions, generating document`);
+    await finalizeTechnicalDocument(ticketId, [], true);
     return;
   }
 
@@ -158,18 +157,27 @@ async function runTaskEvaluation(ticketId: string) {
   console.log(`[Lumen] Posted ${questions.length} clarifying question(s) for ${ticketId}`);
 }
 
-// ── Step 3: PM answered — incorporate and produce the technical document ────
+// ── Step 3: PM answered — incorporate the answers and produce the document ──
 async function runEvaluation(ticketId: string, answerText: string) {
   const state = State.get(ticketId)!;
   const conversationLog = [...state.conversationLog, { from: "human" as const, text: answerText }];
+  await finalizeTechnicalDocument(ticketId, conversationLog, false);
+}
 
+// ── Shared final step: generate and post the technical document ─────────────
+async function finalizeTechnicalDocument(
+  ticketId: string,
+  conversationLog: ConversationTurn[],
+  wasClear: boolean
+) {
+  const state = State.get(ticketId)!;
   const doc = await generateTechnicalDocument(
     state.title,
     state.description,
     state.claudeMdContent!,
     conversationLog
   );
-  const commentId = await postComment(ticketId, formatSummaryComment(doc));
+  const commentId = await postComment(ticketId, formatSummaryComment(doc, wasClear));
   lumenCommentIds.add(commentId);
   State.transition(ticketId, "summarised", { conversationLog });
   console.log(`[Lumen] Technical document posted for ${ticketId}`);
@@ -181,12 +189,11 @@ function formatQuestionsComment(questions: string[]): string {
   return `## 🔎 Lumen — Clarifying Questions\n\n${list}\n\n---\nPlease reply in a comment with your answers.`;
 }
 
-function formatAcknowledgementComment(): string {
-  return `## ✅ Lumen — Task is Clear\n\nThis task is clear and unambiguous — no clarifying questions needed. Proceeding.`;
-}
-
-function formatSummaryComment(doc: string): string {
-  return `## ✅ Lumen — Requirements Clear\n\nAll requirements are now clear. Here is the technical draft, ready to be fed to the Coding Agent:\n\n---\n\n${doc}`;
+function formatSummaryComment(doc: string, wasClear: boolean): string {
+  const intro = wasClear
+    ? "This task was clear and unambiguous — no clarification needed."
+    : "All requirements are now clear.";
+  return `## ✅ Lumen — Requirements Clear\n\n${intro} Here is the technical draft, ready to be fed to the Coding Agent:\n\n---\n\n${doc}`;
 }
 
 // ── Start server ──────────────────────────────────────────────────────────────

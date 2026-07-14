@@ -9,7 +9,6 @@ export type TicketStatus =
   | "analysing"
   | "awaiting_answers"
   | "processing_answer"
-  | "acknowledged"
   | "summarised";
 
 export interface TicketState {

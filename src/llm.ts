@@ -34,55 +34,67 @@ function formatConversation(log: ConversationTurn[]): string {
     .join("\n\n");
 }
 
-/** Phase 3: analyse the requirement against CLAUDE.md and generate the single most important clarifying question. */
-export async function generateQuestion(
+export interface TaskEvaluation {
+  clear: boolean;
+  questions: string[];
+}
+
+/**
+ * Phase 3: evaluate the task against CLAUDE.md. Decide whether it is clear enough
+ * to act on, or ambiguous. If ambiguous, return up to 3 prioritized clarifying
+ * questions (most blocking first). If clear, return an empty list.
+ */
+export async function evaluateTask(
   title: string,
   description: string,
   claudeMdContent: string
-): Promise<string | null> {
-  const systemPrompt = `You are Lumen, a requirement-intelligence agent. You are having a conversation with a Product Manager who is NOT technical and has no knowledge of the codebase, its variables, APIs, data models, or internal architecture.
+): Promise<TaskEvaluation> {
+  const systemPrompt = `You are Lumen, a requirement-intelligence agent. You are talking to a Project Manager (PM) who is NOT technical and has no knowledge of the codebase — its variables, APIs, data models, or internal architecture.
 
-You are given the codebase's CLAUDE.md documentation. Use it ONLY as background knowledge to figure out where the requirement is ambiguous or conflicts with how the product currently behaves. NEVER surface anything from CLAUDE.md directly in a question — no file names, variable names, function names, API endpoints, "state", "backend", "frontend", database/schema terms, or any other implementation vocabulary.
+Your job for a newly submitted task is a TWO-STEP decision:
 
-Translate every technical concern into a plain business/product question about what the user should see or experience. Think like a business analyst interviewing a client, not an engineer interviewing a tech lead.
+STEP 1 — Judge ambiguity. Read the task description and decide if it is:
+  (a) CLEAR — enough detail to act on immediately without guessing, OR
+  (b) AMBIGUOUS — missing details, conflicting information, or open-ended in a way that could lead to the wrong thing being built.
 
-You will have a chance to ask more questions later, one at a time, so do not try to cover everything now. Identify every real gap, then ask ONLY the single most important one — the one whose answer would most affect the design or scope of the feature.
+STEP 2 — Act on that judgement:
+  - If CLEAR: ask NOTHING. Return an empty "questions" array. Do NOT invent questions just to seem thorough. Simple, well-specified tasks must pass through with zero questions.
+  - If AMBIGUOUS: return between 1 and 3 clarifying questions, ordered so the single most blocking/important question is first. Ask only as many as you genuinely need — if one question resolves it, ask one. NEVER return more than 3.
 
-Rules for a good question:
-- Ask about product behavior and business rules, never about implementation (no "should we update the state", "should this be computed client-side or via a new API call", "should we change the POST payload").
-- The question must be grounded in a real gap between the requirement and how the product behaves today — never generic boilerplate that would apply to any feature.
-- Do not ask about anything the requirement already answers.
-- If there is truly no meaningful gap, return null.
-- The question should be answerable with a plain-language decision a non-technical stakeholder can make confidently.
+You are given the codebase's CLAUDE.md documentation. Use it ONLY as background to spot where the task is ambiguous or conflicts with how the product behaves today. NEVER surface anything from CLAUDE.md in a question — no file names, variable names, function names, API endpoints, "state", "backend", "frontend", or database/schema terms. Phrase every question in plain business/product language about what the user should see or experience — like a business analyst interviewing a client, not an engineer interviewing a tech lead.
 
-Bad (technical, references code/implementation — never do this):
-- "Should the quarterly count reuse the existing client-side submissions list, or does it need a new API call?"
+Question quality rules:
+- Grounded in a real gap in THIS task — never generic boilerplate ("what about edge cases?", "how should errors be handled?").
+- Never about implementation ("should we update the state?", "new API call or reuse existing?").
+- Answerable with a plain-language decision a non-technical PM can make confidently.
 
-Bad (vague, generic, not grounded in this requirement):
-- "What should happen in edge cases?"
-
-Good (plain business language, grounded in the actual requirement):
-- "The requirement doesn't say which months make up the first quarter — does your fiscal year start in January, or does it follow a different calendar?"
+Examples (from real scenarios):
+- Task "Update the footer copyright year to 2026 on the website." → CLEAR → { "clear": true, "questions": [] }
+- Task "Improve the login page." → AMBIGUOUS → { "clear": false, "questions": ["Which aspect of the login page should improve — its look and feel, how fast it loads, or how secure it is?", "Is there a design or reference to follow?", "Is there a deadline or priority for this?"] }
+- Task "Add a new payment method to checkout, probably by next sprint." → AMBIGUOUS but mostly one gap → { "clear": false, "questions": ["Which payment method(s) should be added — for example UPI, PayPal, or Apple Pay?"] }
 
 Respond with ONLY valid JSON:
-{ "question": "the single question" }
-or, if there is no meaningful gap:
-{ "question": null }
-No markdown, no backticks, raw JSON only.`;
+{ "clear": true|false, "questions": ["..."] }
+When clear is true, questions MUST be an empty array. When clear is false, questions MUST have 1 to 3 items. No markdown, no backticks, raw JSON only.`;
 
-  const userMessage = `<requirement>
+  const userMessage = `<task>
 <title>${title}</title>
 <description>${description || "(no description provided)"}</description>
-</requirement>
+</task>
 
 <claude_md>
 ${claudeMdContent}
 </claude_md>
 
-Generate the single most important clarifying question.`;
+Evaluate the task.`;
 
   const parsed = await askJSON(systemPrompt, userMessage);
-  return parsed.question ?? null;
+  const clear = parsed.clear === true;
+  let questions: string[] = Array.isArray(parsed.questions) ? parsed.questions.filter(Boolean) : [];
+  // Enforce the hard business rules regardless of what the model returned.
+  if (clear) questions = [];
+  else questions = questions.slice(0, 3);
+  return { clear: clear || questions.length === 0, questions };
 }
 
 /** Phase 5: generate the structured technical document handed off to the Coding Agent. */

@@ -8,6 +8,8 @@ export type TicketStatus =
   | "claude_md_missing"
   | "analysing"
   | "awaiting_answers"
+  | "processing_answer"
+  | "acknowledged"
   | "summarised";
 
 export interface TicketState {
@@ -18,7 +20,6 @@ export interface TicketState {
   status: TicketStatus;
   claudeMdContent?: string;
   conversationLog: ConversationTurn[];
-  round: number;
   createdAt: Date;
   updatedAt: Date;
 }
